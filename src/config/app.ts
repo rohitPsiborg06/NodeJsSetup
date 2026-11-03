@@ -1,0 +1,102 @@
+import cors from 'cors';
+import express, { type Application, type NextFunction, type Request, type Response } from 'express';
+import { rateLimit } from 'express-rate-limit';
+import helmet from 'helmet';
+import mongoose from 'mongoose';
+import morgan from 'morgan';
+
+import { sendError, sendNotFound, sendServerError, sendSuccess, sendTooManyRequests } from '../utils/response';
+
+const isProd = process.env.NODE_ENV === 'production';
+const app: Application = express();
+
+app.set('trust proxy', 1);
+
+app.use(helmet());
+app.use(morgan(isProd ? 'combined' : 'dev'));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+
+// Global Rate Limiter
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 100,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  handler: (_req: Request, res: Response) => {
+    return sendTooManyRequests(res, 'Too many requests, please try again later.');
+  },
+});
+
+app.use(globalLimiter);
+
+// CORS configuration
+const allowedOrigins = (process.env.CORS_ORIGINS ?? '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin: isProd && allowedOrigins.length > 0 ? allowedOrigins : true,
+    credentials: true,
+  })
+);
+
+// Root endpoint
+app.get('/', (_req: Request, res: Response) => {
+  return sendSuccess(res, null, 'Hello Developer.');
+});
+
+// Health check endpoint
+app.get('/health', (_req: Request, res: Response) => {
+  const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+
+  return sendSuccess(
+    res,
+    {
+      status: 'healthy',
+      uptime: process.uptime(),
+      timestamp: Date.now(),
+      database: dbStatus,
+    },
+    'Service is operational.'
+  );
+});
+
+// 404 Catch-all handler
+app.use((_req: Request, res: Response) => {
+  return sendNotFound(res, 'Route not found.');
+});
+
+// Global error handler
+interface HttpError extends Error {
+  status?: number;
+  statusCode?: number;
+  type?: string;
+}
+
+app.use((err: HttpError, req: Request, res: Response, next: NextFunction) => {
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  const status = err.status ?? err.statusCode ?? 500;
+
+  if (err.type === 'entity.parse.failed')
+    return sendError(res, 'Invalid JSON body.', 400);
+
+  if (err.type === 'entity.too.large')
+    return sendError(res, 'Payload too large.', 413);
+
+  if (status >= 400 && status < 500)
+    return sendError(res, err.message, status);
+
+  return sendServerError(
+    res,
+    isProd ? 'Internal Server Error' : err.message || 'Internal Server Error',
+    isProd ? null : err.stack ?? err
+  );
+});
+
+export default app;
