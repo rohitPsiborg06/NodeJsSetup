@@ -4,6 +4,7 @@ dotenv.config();
 import { createServer } from 'http';
 import app from './config/app';
 import { connectDB, disconnectDB } from './config/database';
+import { connectRedis, disconnectRedis } from './config/redis';
 
 const PORT = Number(process.env.PORT) || 3000;
 const httpServer = createServer(app);
@@ -20,7 +21,8 @@ process.on('unhandledRejection', (reason: unknown) => {
 
 const startServer = async (): Promise<void> => {
   try {
-    await connectDB();
+    // Initialize external services in parallel
+    await Promise.all([connectDB(), connectRedis()]);
 
     const server = httpServer.listen(PORT, () => {
       console.log(`Server is running on http://localhost:${PORT}`);
@@ -44,8 +46,8 @@ const startServer = async (): Promise<void> => {
 
       server.close(async () => {
         try {
-          await disconnectDB();
-          console.log('Server and database disconnected cleanly.');
+          await Promise.allSettled([disconnectDB(), disconnectRedis()]);
+          console.log('Server, MongoDB, and Redis disconnected cleanly.');
           process.exit(0);
         } catch (err) {
           console.error('Error during shutdown:', err);

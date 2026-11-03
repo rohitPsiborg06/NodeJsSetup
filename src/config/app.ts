@@ -4,7 +4,9 @@ import { rateLimit } from 'express-rate-limit';
 import helmet from 'helmet';
 import mongoose from 'mongoose';
 import morgan from 'morgan';
+import { RedisStore } from 'rate-limit-redis';
 
+import { redis } from './redis';
 import { sendError, sendNotFound, sendServerError, sendSuccess, sendTooManyRequests } from '../utils/response';
 
 const isProd = process.env.NODE_ENV === 'production';
@@ -17,12 +19,17 @@ app.use(morgan(isProd ? 'combined' : 'dev'));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
-// Global Rate Limiter
+// Distributed Rate Limiter backed by Redis (falls back gracefully if store errors)
 const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 100,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  limit: 100, // 100 requests per window per IP
   standardHeaders: 'draft-8',
   legacyHeaders: false,
+  passOnStoreError: true, // If Redis is unavailable, allow request instead of failing 500
+  store: new RedisStore({
+    sendCommand: (...args: string[]) => redis.call(args[0]!, ...args.slice(1)) as Promise<any>,
+    prefix: 'rl:global:',
+  }),
   handler: (_req: Request, res: Response) => {
     return sendTooManyRequests(res, 'Too many requests, please try again later.');
   },
@@ -48,19 +55,25 @@ app.get('/', (_req: Request, res: Response) => {
   return sendSuccess(res, null, 'Hello Developer.');
 });
 
-// Health check endpoint
+// Health check endpoint (MongoDB + Redis status)
 app.get('/health', (_req: Request, res: Response) => {
   const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+  const redisStatus = redis.status === 'ready' ? 'connected' : 'disconnected';
+
+  const isHealthy = dbStatus === 'connected' && (redisStatus === 'connected' || !isProd);
 
   return sendSuccess(
     res,
     {
-      status: 'healthy',
+      status: isHealthy ? 'healthy' : 'degraded',
       uptime: process.uptime(),
       timestamp: Date.now(),
-      database: dbStatus,
+      services: {
+        database: dbStatus,
+        redis: redisStatus,
+      },
     },
-    'Service is operational.'
+    'Health check complete.'
   );
 });
 
@@ -83,14 +96,19 @@ app.use((err: HttpError, req: Request, res: Response, next: NextFunction) => {
 
   const status = err.status ?? err.statusCode ?? 500;
 
-  if (err.type === 'entity.parse.failed')
+  console.error(`[${req.method}] ${req.originalUrl} ->`, err);
+
+  if (err.type === 'entity.parse.failed') {
     return sendError(res, 'Invalid JSON body.', 400);
+  }
 
-  if (err.type === 'entity.too.large')
+  if (err.type === 'entity.too.large') {
     return sendError(res, 'Payload too large.', 413);
+  }
 
-  if (status >= 400 && status < 500)
+  if (status >= 400 && status < 500) {
     return sendError(res, err.message, status);
+  }
 
   return sendServerError(
     res,
