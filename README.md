@@ -1,6 +1,6 @@
 # Node.js TypeScript Starter Boilerplate
 
-A production-ready, highly-optimized Node.js + Express starter template written in TypeScript with MongoDB (Mongoose), Redis (ioredis), and WebSockets (Socket.IO with Redis Adapter & Pub/Sub), designed for rapid backend development.
+A production-ready, highly-optimized Node.js + Express starter template written in TypeScript with MongoDB (Mongoose), Redis (ioredis), and WebSockets (Socket.IO with Redis Adapter), designed for rapid backend development.
 
 ---
 
@@ -9,18 +9,17 @@ A production-ready, highly-optimized Node.js + Express starter template written 
 - **Express 5 & TypeScript**: Built with the latest Express 5 and strict TypeScript configuration.
 - **Fast Development & Bundling**: Powered by `tsx` (instant hot-reload) and `tsup` (blazing-fast ES module build).
 - **Socket.IO Real-Time WebSockets**:
-  - Horizontal multi-node scaling via `@socket.io/redis-adapter`.
-  - Global `getIO()` singleton to emit events from any controller, service, or route.
-  - Channel subscription management: `subscribe`, `unsubscribe`, `unsubscribe_all`, and `get_subscriptions`.
-  - Server-side helpers: `emitToChannel(channel, event, payload)` and `broadcastToAll(event, payload)`.
+  - Horizontal multi-node scaling via `@socket.io/redis-adapter` (with seamless in-memory fallback).
+  - Clean room subscription model (`subscribe`, `unsubscribe`).
+  - Server-side helpers: `emitToRoom(room, event, data)` and `broadcast(event, data)`.
+  - Context & Hierarchy isolated: Only clients subscribed to a specific room receive its live data.
   - Graceful socket connection draining on server shutdown.
 - **Redis & Distributed Rate Limiting**:
   - `ioredis` with exponential backoff, reconnect handling, and lazy-connect options.
   - Distributed `express-rate-limit` using `rate-limit-redis` (works across multi-instance clusters).
   - Graceful fallback (`passOnStoreError: true`) so the server remains available even if Redis is temporarily offline.
   - High-performance `cache` utility with Cache-Aside pattern (`getOrSet`), JSON serialization, TTL support, and non-blocking key pattern scanning (`scanStream`).
-  - Redis Pub/Sub manager (`pubsub.publish`, `pubsub.subscribe`, `pubsub.unsubscribe`, `pubsub.bridgeToSocket`).
-- **Graceful Shutdown**: Safe termination handling (`SIGINT`, `SIGTERM`) that drains active HTTP connections and closes WebSockets first before disconnecting MongoDB, Redis, and PubSub in parallel, backed by a 10s safety timeout.
+- **Graceful Shutdown**: Safe termination handling (`SIGINT`, `SIGTERM`) that drains active HTTP connections and closes WebSockets first before disconnecting MongoDB and Redis in parallel, backed by a 10s safety timeout.
 - **Production-Ready Security**:
   - `helmet` for HTTP security headers
   - Configurable `cors` origins for both Express and WebSockets
@@ -41,12 +40,11 @@ A production-ready, highly-optimized Node.js + Express starter template written 
 │   │   ├── app.ts        # Express application configuration & middlewares
 │   │   ├── database.ts   # MongoDB connection & lifecycle events
 │   │   ├── redis.ts      # Redis client, retry strategy & connection lifecycle
-│   │   └── socket.ts     # Socket.IO setup, Redis adapter & emission helpers
+│   │   └── socket.ts     # Socket.IO setup, Redis adapter, emitToRoom & broadcast
 │   ├── sockets/
-│   │   └── index.ts      # Client socket event listeners (subscribe/unsubscribe/rooms)
+│   │   └── index.ts      # Socket event listeners (subscribe & unsubscribe)
 │   ├── utils/
 │   │   ├── cache.ts      # Production Redis caching helper (get, set, del, getOrSet)
-│   │   ├── pubsub.ts     # Redis Pub/Sub manager with WebSocket bridge
 │   │   └── response.ts   # Standardized API response helpers & types
 │   └── index.ts          # Server entry point & graceful shutdown
 ├── .env.example          # Environment variables template
@@ -110,68 +108,53 @@ CORS_ORIGINS=http://localhost:3000,http://localhost:5173
 
 ---
 
-## Real-Time Channel Subscription Example
+## Real-Time Module & Hierarchy Usage Example
 
-### Client-side (Frontend / Mobile):
+### Client-Side (Frontend / Dashboard):
 
+When a manager opens the **Device** module:
 ```javascript
 import { io } from "socket.io-client";
-
 const socket = io("http://localhost:3000");
 
-// 1. Subscribe to a channel (with optional ack callback)
-socket.emit("subscribe", "orders:123", (res) => {
-  console.log("Subscribed:", res); // { success: true, channels: ['orders:123'] }
+// 1. Entering Device Page: Subscribe to manager's device room
+socket.emit("subscribe", "devices:mgr_101");
+
+// Listen for updates made by any sub-user under this manager
+socket.on("device_changed", (data) => {
+  console.log("Device update received:", data);
 });
 
-// 2. Listen to incoming events on that channel
-socket.on("order_updated", (data) => {
-  console.log("Order update received:", data);
+// 2. Leaving Device Page / Switching to Alert Page:
+socket.emit("unsubscribe", "devices:mgr_101");
+socket.emit("subscribe", "alerts:mgr_101");
+
+socket.on("alert_triggered", (alert) => {
+  console.log("Alert received:", alert);
 });
-
-// 3. Unsubscribe from a channel
-socket.emit("unsubscribe", "orders:123");
-
-// 4. Check active subscriptions
-socket.emit("get_subscriptions", (channels) => {
-  console.log("My channels:", channels);
-});
-
-// 5. Unsubscribe from all channels
-socket.emit("unsubscribe_all");
 ```
 
-### Server-side (Backend emitting to subscribers):
+### Server-Side (Controllers / Services):
 
+Whenever a device or alert changes:
 ```typescript
-import { emitToChannel, broadcastToAll } from './config/socket';
+import { emitToRoom, broadcast } from './config/socket';
 
-// Emit only to clients subscribed to "orders:123"
-emitToChannel('orders:123', 'order_updated', { status: 'SHIPPED', eta: 'Tomorrow' });
-
-// Broadcast to every connected client
-broadcastToAll('announcement', { text: 'Platform maintenance scheduled.' });
-```
-
----
-
-## Redis Pub/Sub Example
-
-For cross-service or inter-process communication:
-
-```typescript
-import { pubsub } from './utils/pubsub';
-
-// Publish to a Redis channel
-await pubsub.publish('payment_events', { orderId: '123', amount: 99.99 });
-
-// Subscribe to a Redis channel
-await pubsub.subscribe('payment_events', (data, channel) => {
-  console.log(`Received message on ${channel}:`, data);
+// Emits ONLY to users currently subscribed to this manager's device room
+emitToRoom('devices:mgr_101', 'device_changed', {
+  deviceId: 'DEV-884',
+  status: 'ONLINE',
+  modifiedBy: 'sub_user_03',
 });
 
-// Automatically forward Redis channel messages to WebSocket subscribers
-await pubsub.bridgeToSocket('crypto_prices', 'price_tick');
+// Emits ONLY to users in the alerts room
+emitToRoom('alerts:mgr_101', 'alert_triggered', {
+  level: 'CRITICAL',
+  message: 'Device battery low',
+});
+
+// Broadcast to everyone connected
+broadcast('system_notification', { message: 'Scheduled maintenance in 1 hour' });
 ```
 
 ---

@@ -4,7 +4,7 @@ import type { Redis } from 'ioredis';
 import { Server, type ServerOptions } from 'socket.io';
 
 import { isRedisReady, redis } from './redis';
-import { formatChannel, registerSocketHandlers } from '../sockets';
+import { registerSocketHandlers } from '../sockets';
 
 let io: Server | null = null;
 let redisPubClient: Redis | null = null;
@@ -31,7 +31,7 @@ export const initSocket = (httpServer: HttpServer): Server => {
 
   io = new Server(httpServer, socketOptions);
 
-  // Attach Redis adapter for multi-instance scaling if Redis is operational
+  // Redis adapter for multi-instance scaling
   if (isRedisReady()) {
     try {
       redisPubClient = redis.duplicate();
@@ -39,18 +39,11 @@ export const initSocket = (httpServer: HttpServer): Server => {
       io.adapter(createAdapter(redisPubClient, redisSubClient));
       console.log('Socket.IO Redis adapter attached for horizontal scaling.');
     } catch (err) {
-      console.warn('Failed to initialize Redis adapter for Socket.IO. Defaulting to in-memory adapter.', err);
+      console.warn('Failed to attach Redis adapter for Socket.IO. Running in-memory.', err);
     }
   }
 
-  // Socket Authentication Middleware placeholder (ready for JWT verification)
-  io.use((socket, next) => {
-    // const token = socket.handshake.auth.token || socket.handshake.headers.authorization;
-    // Perform authentication if required; call next(new Error('Unauthorized')) to reject
-    next();
-  });
-
-  // Register socket event handlers
+  // Register subscribe / unsubscribe listeners
   registerSocketHandlers(io);
 
   return io;
@@ -67,19 +60,17 @@ export const getIO = (): Server => {
 };
 
 /**
- * Emit an event to all clients subscribed to a specific channel
+ * Emit an event ONLY to clients who are subscribed to this room (e.g. "devices:mgr_101")
  */
-export const emitToChannel = <T = unknown>(channel: string, event: string, payload: T): void => {
-  const socketServer = getIO();
-  socketServer.to(formatChannel(channel)).emit(event, payload);
+export const emitToRoom = <T = unknown>(room: string, event: string, payload: T): void => {
+  getIO().to(room.trim()).emit(event, payload);
 };
 
 /**
- * Broadcast an event to all connected clients
+ * Broadcast an event to ALL connected clients across the entire application
  */
-export const broadcastToAll = <T = unknown>(event: string, payload: T): void => {
-  const socketServer = getIO();
-  socketServer.emit(event, payload);
+export const broadcast = <T = unknown>(event: string, payload: T): void => {
+  getIO().emit(event, payload);
 };
 
 /**

@@ -6,7 +6,6 @@ import app from './config/app';
 import { connectDB, disconnectDB } from './config/database';
 import { connectRedis, disconnectRedis } from './config/redis';
 import { closeSocket, initSocket } from './config/socket';
-import { pubsub } from './utils/pubsub';
 
 const PORT = Number(process.env.PORT) || 3000;
 const httpServer = createServer(app);
@@ -58,7 +57,7 @@ const startServer = async (): Promise<void> => {
 
       server.close(async () => {
         try {
-          await Promise.allSettled([disconnectDB(), disconnectRedis(), pubsub.disconnect()]);
+          await Promise.allSettled([disconnectDB(), disconnectRedis()]);
           console.log('Server, Sockets, MongoDB, and Redis disconnected cleanly.');
           process.exit(0);
         } catch (err) {
