@@ -7,6 +7,7 @@ import morgan from 'morgan';
 import { RedisStore } from 'rate-limit-redis';
 
 import { redis } from './redis';
+import { getIO } from './socket';
 import { sendError, sendNotFound, sendServerError, sendSuccess, sendTooManyRequests } from '../utils/response';
 
 const isProd = process.env.NODE_ENV === 'production';
@@ -55,10 +56,17 @@ app.get('/', (_req: Request, res: Response) => {
   return sendSuccess(res, null, 'Hello Developer.');
 });
 
-// Health check endpoint (MongoDB + Redis status)
+// Health check endpoint (MongoDB + Redis + Sockets status)
 app.get('/health', (_req: Request, res: Response) => {
   const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
   const redisStatus = redis.status === 'ready' ? 'connected' : 'disconnected';
+
+  let activeSockets = 0;
+  try {
+    activeSockets = getIO().engine.clientsCount;
+  } catch {
+    activeSockets = 0;
+  }
 
   const isHealthy = dbStatus === 'connected' && (redisStatus === 'connected' || !isProd);
 
@@ -71,6 +79,7 @@ app.get('/health', (_req: Request, res: Response) => {
       services: {
         database: dbStatus,
         redis: redisStatus,
+        activeSockets,
       },
     },
     'Health check complete.'

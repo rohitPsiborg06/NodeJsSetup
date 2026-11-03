@@ -5,6 +5,8 @@ import { createServer } from 'http';
 import app from './config/app';
 import { connectDB, disconnectDB } from './config/database';
 import { connectRedis, disconnectRedis } from './config/redis';
+import { closeSocket, initSocket } from './config/socket';
+import { pubsub } from './utils/pubsub';
 
 const PORT = Number(process.env.PORT) || 3000;
 const httpServer = createServer(app);
@@ -23,6 +25,9 @@ const startServer = async (): Promise<void> => {
   try {
     // Initialize external services in parallel
     await Promise.all([connectDB(), connectRedis()]);
+
+    // Initialize Socket.IO
+    initSocket(httpServer);
 
     const server = httpServer.listen(PORT, () => {
       console.log(`Server is running on http://localhost:${PORT}`);
@@ -44,10 +49,17 @@ const startServer = async (): Promise<void> => {
         server.closeIdleConnections();
       }
 
+      // Close socket connections
+      try {
+        await closeSocket();
+      } catch (err) {
+        console.error('Error closing Socket.IO:', err);
+      }
+
       server.close(async () => {
         try {
-          await Promise.allSettled([disconnectDB(), disconnectRedis()]);
-          console.log('Server, MongoDB, and Redis disconnected cleanly.');
+          await Promise.allSettled([disconnectDB(), disconnectRedis(), pubsub.disconnect()]);
+          console.log('Server, Sockets, MongoDB, and Redis disconnected cleanly.');
           process.exit(0);
         } catch (err) {
           console.error('Error during shutdown:', err);
